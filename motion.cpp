@@ -14,23 +14,33 @@
 #include <vector>
 #include <cmath>
 #include <numeric>
+#include <deque>
 
 using namespace cv;
 using namespace std;
 
+// Parameters
 const float pinch_threshold = 0.03f;
-const float distance_threshold = 0.05f;
-const float swipe_threshold = 50.0f;
+const float swipe_threshold = 20.0f;  // lower because we smooth it
+const float scale_threshold = 0.1f;   // 10% relative change triggers spiral
+const int buffer_size = 5;             // number of frames for smoothing
 
+// Buffers for smooth swipe detection
+deque<float> movement_x_buffer;
+deque<float> movement_y_buffer;
+
+// Previous values
 float previous_distance = -1.0f;
 float prev_x_right = -1.0f;
 float prev_y_right = -1.0f;
 
+// Sounds
 Mix_Chunk* swipe_right_sound;
 Mix_Chunk* swipe_left_sound;
 Mix_Chunk* swipe_up_sound;
 Mix_Chunk* swipe_down_sound;
 
+// Helper Functions
 float calculate_distance(float x1, float y1, float x2, float y2) {
     return sqrt(pow(x1 - x2, 2) + pow(y1 - y2, 2));
 }
@@ -69,8 +79,18 @@ string recognize_gesture(const vector<mediapipe::NormalizedLandmark>& landmarks)
     return "Unknown";
 }
 
+void update_buffer(deque<float>& buffer, float value) {
+    if (buffer.size() >= buffer_size) buffer.pop_front();
+    buffer.push_back(value);
+}
+
+float average(const deque<float>& buffer) {
+    if (buffer.empty()) return 0.0f;
+    return accumulate(buffer.begin(), buffer.end(), 0.0f) / buffer.size();
+}
+
 int main() {
-    // Initialize SDL2 mixer
+    // SDL2 mixer initialization
     if (SDL_Init(SDL_INIT_AUDIO) < 0) {
         cerr << "SDL_Init Error: " << SDL_GetError() << endl;
         return -1;
@@ -90,6 +110,7 @@ int main() {
         return -1;
     }
 
+    // MediaPipe Graph Initialization
     mediapipe::CalculatorGraph graph;
     string graph_config_contents;
     {
@@ -110,7 +131,7 @@ int main() {
     ASSIGN_OR_RETURN(auto poller_handedness, graph.AddOutputStreamPoller("multi_handedness"));
     MP_RETURN_IF_ERROR(graph.StartRun({}));
 
-    namedWindow("Hand Gesture and Swipe Detection", WINDOW_NORMAL);
+    namedWindow("Hand Gesture Detection", WINDOW_NORMAL);
 
     while (true) {
         Mat camera_frame_raw;
@@ -156,12 +177,13 @@ int main() {
                 left_pinch = check_pinch(landmarks);
                 if (!left_pinch) {
                     string gesture = recognize_gesture(landmarks);
-                    putText(camera_frame_raw, "Left Hand: " + gesture, Point(50, 50), FONT_HERSHEY_SIMPLEX, 1, Scalar(0, 255, 0), 2);
+                    putText(camera_frame_raw, "Left: " + gesture, Point(30, 50), FONT_HERSHEY_SIMPLEX, 1, Scalar(0, 255, 0), 2);
                 }
             }
             if (label == "Right") {
                 right_hand = landmarks;
                 right_pinch = check_pinch(landmarks);
+
                 auto [hand_x, hand_y] = get_hand_center(landmarks);
                 hand_x *= camera_frame_raw.cols;
                 hand_y *= camera_frame_raw.rows;
@@ -171,11 +193,29 @@ int main() {
                         float move_x = hand_x - prev_x_right;
                         float move_y = hand_y - prev_y_right;
 
-                        if (move_x > swipe_threshold) { cout << "Swipe Right!" << endl; Mix_PlayChannel(-1, swipe_right_sound, 0); }
-                        else if (move_x < -swipe_threshold) { cout << "Swipe Left!" << endl; Mix_PlayChannel(-1, swipe_left_sound, 0); }
+                        update_buffer(movement_x_buffer, move_x);
+                        update_buffer(movement_y_buffer, move_y);
 
-                        if (move_y > swipe_threshold) { cout << "Swipe Down!" << endl; Mix_PlayChannel(-1, swipe_down_sound, 0); }
-                        else if (move_y < -swipe_threshold) { cout << "Swipe Up!" << endl; Mix_PlayChannel(-1, swipe_up_sound, 0); }
+                        if (abs(average(movement_x_buffer)) > swipe_threshold) {
+                            if (average(movement_x_buffer) > 0) {
+                                cout << "Smooth Swipe Right!" << endl;
+                                Mix_PlayChannel(-1, swipe_right_sound, 0);
+                            } else {
+                                cout << "Smooth Swipe Left!" << endl;
+                                Mix_PlayChannel(-1, swipe_left_sound, 0);
+                            }
+                            movement_x_buffer.clear();
+                        }
+                        if (abs(average(movement_y_buffer)) > swipe_threshold) {
+                            if (average(movement_y_buffer) > 0) {
+                                cout << "Smooth Swipe Down!" << endl;
+                                Mix_PlayChannel(-1, swipe_down_sound, 0);
+                            } else {
+                                cout << "Smooth Swipe Up!" << endl;
+                                Mix_PlayChannel(-1, swipe_up_sound, 0);
+                            }
+                            movement_y_buffer.clear();
+                        }
                     }
                     prev_x_right = hand_x;
                     prev_y_right = hand_y;
@@ -189,16 +229,18 @@ int main() {
                 get_hand_center(right_hand).first, get_hand_center(right_hand).second
             );
             if (previous_distance > 0) {
-                float distance_change = fabs(current_distance - previous_distance);
-                if (distance_change > distance_threshold) {
-                    if (current_distance < previous_distance) cout << "Left Spiral Detected!" << endl;
-                    else cout << "Right Spiral Detected!" << endl;
+                float scale_change = (current_distance - previous_distance) / previous_distance;
+                if (fabs(scale_change) > scale_threshold) {
+                    if (scale_change < 0)
+                        cout << "Smooth Left Spiral!" << endl;
+                    else
+                        cout << "Smooth Right Spiral!" << endl;
                 }
             }
             previous_distance = current_distance;
         }
 
-        imshow("Hand Gesture and Swipe Detection", camera_frame_raw);
+        imshow("Hand Gesture Detection", camera_frame_raw);
         if (waitKey(5) == 'q') break;
     }
 
