@@ -1,0 +1,34 @@
+# This is a standard MediaPipe hand tracking graph.
+# Don't worry, it's similar to what the Python SDK uses internally.
+
+input_stream: "input_video"
+output_stream: "output_video"
+output_stream: "multi_hand_landmarks"
+output_stream: "multi_handedness"
+
+node {
+  calculator: "FlowLimiterCalculator"
+  input_stream: "input_video"
+  input_stream: "FINISHED:output_video"
+  input_stream_info: {
+    tag_index: "FINISHED"
+    back_edge: true
+  }
+  output_stream: "throttled_input_video"
+}
+
+node {
+  calculator: "HandLandmarkGpu"
+  input_stream: "IMAGE:throttled_input_video"
+  output_stream: "LANDMARKS:multi_hand_landmarks"
+  output_stream: "HANDEDNESS:multi_handedness"
+  output_stream: "DETECTION:multi_hand_detections"
+  output_stream: "NORM_RECTS:multi_hand_rects"
+}
+
+node {
+  calculator: "AnnotationOverlayCalculator"
+  input_stream: "IMAGE:throttled_input_video"
+  input_stream: "LANDMARKS:multi_hand_landmarks"
+  output_stream: "output_video"
+}
